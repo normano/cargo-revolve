@@ -19,6 +19,9 @@ pub struct BuilderContext<'a> {
   pub archive_root_dir: &'a str,
   
   #[serde(skip_serializing_if = "Option::is_none")]
+  pub changelog: Option<&'a str>,
+  
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub assets: Option<&'a Vec<Asset>>,
   
   #[serde(skip_serializing_if = "Option::is_none")]

@@ -31,8 +31,10 @@ This workflow is fast, reliable, and does not require `rustc` or `cargo` on your
 - **Pre-compiled Artifact Workflow:** Compiles your code locally first, then packages the results for `rpmbuild`.
 - **`.spec` File Templating:** Uses the powerful [Tera](https://tera.netlify.app/) template engine to inject metadata from your `Cargo.toml` directly into your `.spec` file.
 - **Data-Driven Packaging:** Define your package files once in an `assets` list in `Cargo.toml` and use loops in your template to automatically populate the `%install` and `%files` sections.
+- **Automatic Changelog Inclusion:** Reads a changelog file and injects it directly into the spec's `%changelog` section.
+- **Clean Output Directory:** Copies final RPMs to a user-defined directory (e.g., `dist/`) for easy access in CI/CD.
 - **Workspace-Aware:** Correctly locates the `target` directory and package paths, whether in a single crate or a complex workspace.
-- **Post-Build Verification:** The `--verify` flag parses the generated RPMs to ensure their contents match your configuration, catching packaging errors instantly.
+- **Post-Build Verification:** The `--verify` flag parses the generated RPMs to ensure their contents and file permissions match your configuration, catching packaging errors instantly.
 - **Native `rpmbuild` Backend:** Ensures 100% compatibility with all RPM features and build environments.
 - **Developer-Friendly Workflow:** A `--dry-run` flag shows you exactly what would happen.
 - **Built-in Inspector:** The `info` subcommand quickly inspects the metadata and file list of any `.rpm` file.
@@ -68,7 +70,8 @@ Ensure that `rpmbuild` is installed on your system.
     {{ pkg.description }}
 
     %prep
-    %setup -q
+    # Use the variable provided by cargo-revolve for robustness.
+    %setup -q -n {{ builder.archive_root_dir }}
 
     %build
     # This section is intentionally empty.
@@ -86,6 +89,12 @@ Ensure that `rpmbuild` is installed on your system.
     {% for asset in builder.assets %}
     {{ asset.dest }}
     {% endfor %}
+
+    # Conditionally include the changelog if it's provided.
+    {% if builder.changelog %}
+    %changelog
+    {{ builder.changelog | trim }}
+    {% endif %}
     ```
 
 2.  **Configure `Cargo.toml`**
@@ -94,8 +103,15 @@ Ensure that `rpmbuild` is installed on your system.
 
     ```toml
     [package.metadata.revolve]
+    # Path to the spec file template.
     spec_template = ".revolve/my-app.spec.in"
     
+    # (Optional) Copy final RPMs to this directory.
+    output_dir = "dist"
+    
+    # (Optional) Read this file's content into the template's `builder.changelog` variable.
+    changelog = "CHANGELOG.md"
+
     # List all asset files to be included in the RPM.
     assets = [
       # The compiled binary from the target directory.
@@ -114,10 +130,10 @@ Ensure that `rpmbuild` is installed on your system.
     Run the build command from the root of your project. `cargo-revolve` will run `cargo build` for you.
 
     ```bash
-    cargo revolve build
+    cargo revolve build --verify
     ```
 
-    Your newly built RPM(s) will be in the workspace `target/revolve/rpmbuild/RPMS/` directory.
+    Your newly built RPM(s) will be in the `dist/` directory, as configured in `Cargo.toml`.
 
 ## Usage
 
@@ -128,9 +144,9 @@ cargo revolve <COMMAND>
 ### Commands
 
 - `cargo revolve build [OPTIONS]`
-  -   `--dry-run`: Prepare everything but skip `cargo build` and `rpmbuild`. Prints the rendered `.spec` and the `rpmbuild` command that would be run.
-  -   `--verify`: After building, inspect the main binary RPM to ensure its name, version, and file list match your configuration.
-  -   `--no-archive`: (Advanced) Compile and render the spec, but skip the archive and `rpmbuild` steps.
+  -   `--dry-run`: Prepare everything but skip the final `rpmbuild` execution. Prints the rendered `.spec` and the `rpmbuild` command that would be run.
+  -   `--verify`: After building, inspect the main binary RPM to ensure its name, version, files, and permissions match your configuration.
+  -   `--no-archive`: (Advanced) Build directly from the source tree without creating a source archive. Requires a spec file that does not use the `%setup` macro.
 
 - `cargo revolve info <RPM_FILE>`
   -   Parses the given `.rpm` file and prints its metadata and file manifest.

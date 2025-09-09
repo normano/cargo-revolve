@@ -7,6 +7,8 @@ license = "MIT"
 
 [package.metadata.revolve]
 spec_template = "sample.spec.in"
+output_dir = "dist"
+changelog = "CHANGELOG.md"
 assets = [
   { source = "target/release/sample-project", dest = "/usr/bin/sample-project", mode = "0755" },
 ]

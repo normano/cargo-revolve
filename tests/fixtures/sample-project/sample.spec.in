@@ -28,3 +28,8 @@ install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source | split(
 {% for asset in builder.assets %}
 {{ asset.dest }}
 {% endfor %}
+
+{% if builder.changelog %}
+%changelog
+{{ builder.changelog | trim }}
+{% endif %}

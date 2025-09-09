@@ -142,6 +142,26 @@ fn render_spec(
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
   let template_path = manifest_dir.join(&config.spec_template);
 
+  // Read changelog content if configured.
+  let changelog_content = if let Some(changelog_file) = &config.changelog {
+    let changelog_path = manifest_dir.join(changelog_file);
+    log::info!("Reading changelog from {}", changelog_path.display());
+    match fs::read_to_string(&changelog_path) {
+      Ok(content) => Some(content),
+      Err(e) => {
+        // A missing changelog is not a fatal error; warn the user and continue.
+        log::warn!(
+          "Failed to read changelog file at {}: {}",
+          changelog_path.display(),
+          e
+        );
+        None
+      }
+    }
+  } else {
+    None
+  };
+
   let mut tera = Tera::default();
   tera
     .add_template_file(&template_path, Some("spec"))
@@ -164,6 +184,7 @@ fn render_spec(
     builder: BuilderContext {
       spec_template: &config.spec_template,
       archive_root_dir: &archive_root_dir,
+      changelog: changelog_content.as_deref(),
       assets: config.assets.as_ref(),
       build_flags: config.build_flags.as_ref(),
     },
