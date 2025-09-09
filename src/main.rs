@@ -132,7 +132,6 @@ fn main() -> Result<()> {
       no_archive,
       verify,
     } => {
-      let revolve_config = load_revolve_config(root_package.manifest_path.as_std_path())?;
       log::debug!(
         "Dispatching to 'build' command with dry_run={}, no_archive={}",
         dry_run,
@@ -146,7 +145,7 @@ fn main() -> Result<()> {
         .find(|p| p.manifest_path.as_std_path().parent().unwrap() == current_dir)
         .ok_or_else(|| anyhow!("Could not find a Cargo.toml in the current directory"))?;
 
-      // THE FIX: Get the correct target directory from the metadata.
+      // Get the correct target directory from the metadata.
       let target_dir = metadata.target_directory.as_std_path();
 
       let revolve_config = load_revolve_config(package.manifest_path.as_std_path())?;

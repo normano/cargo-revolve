@@ -16,6 +16,8 @@ pub struct PkgContext<'a> {
 pub struct BuilderContext<'a> {
   pub spec_template: &'a str,
   
+  pub archive_root_dir: &'a str,
+  
   #[serde(skip_serializing_if = "Option::is_none")]
   pub assets: Option<&'a Vec<Asset>>,
   

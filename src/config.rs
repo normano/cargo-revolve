@@ -16,4 +16,6 @@ pub struct RevolveConfig {
   pub changelog: Option<String>,
   pub build_flags: Option<Vec<String>>,
   pub assets: Option<Vec<Asset>>,
+  pub verify_license: Option<String>,
+  pub verify_summary: Option<String>,
 }

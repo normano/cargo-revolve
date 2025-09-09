@@ -12,7 +12,7 @@ Source0:        {{ pkg.name }}-{{ pkg.version }}.tar.gz
 {{ pkg.description }}
 
 %prep
-%setup -q
+%setup -q -n {{ builder.archive_root_dir }}
 
 %build
 # This section is empty as the binary is pre-compiled.

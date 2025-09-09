@@ -1,15 +1,18 @@
 use crate::config::RevolveConfig;
 use crate::definitions::{BuilderContext, PkgContext, TemplateContext};
 use crate::error::Result;
+
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::thread;
+
 use anyhow::{bail, Context};
 use cargo_metadata::Package as CargoPackage;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use ignore::WalkBuilder;
 use rpm::Package as RpmPackage;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use tar::Builder;
 use tera::Tera;
 
@@ -134,7 +137,6 @@ fn render_spec(
   build_dir: &Path,
 ) -> Result<(PathBuf, String)> {
   log::info!("Rendering .spec template...");
-  // CONVERT Utf8PathBuf to PathBuf here
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
   let template_path = manifest_dir.join(&config.spec_template);
 
@@ -147,6 +149,9 @@ fn render_spec(
         template_path.display()
       )
     })?;
+  
+
+  let archive_root_dir = format!("{}-{}", package.name, package.version);
 
   let context = tera::Context::from_serialize(TemplateContext {
     pkg: PkgContext {
@@ -157,6 +162,7 @@ fn render_spec(
     },
     builder: BuilderContext {
       spec_template: &config.spec_template,
+      archive_root_dir: &archive_root_dir, 
       assets: config.assets.as_ref(),
       build_flags: config.build_flags.as_ref(),
     },
@@ -189,6 +195,7 @@ fn create_artifact_archive(
   dry_run: bool,
 ) -> Result<PathBuf> {
   log::info!("Creating artifact archive...");
+
   let project_dir = package.manifest_path.parent().unwrap().as_std_path();
   let archive_filename = format!("{}-{}.tar.gz", package.name, package.version);
   let archive_path = project_dir.join("target").join(&archive_filename);
@@ -236,7 +243,9 @@ fn cargo_build(
     .arg("build")
     .current_dir(project_dir)
     .arg("--target-dir")
-    .arg(target_dir);
+    .arg(target_dir)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
 
   if let Some(flags) = build_flags {
     cmd.args(flags);
@@ -247,16 +256,35 @@ fn cargo_build(
     cmd.arg("--release");
   }
 
-  // Stream the output for better UX. We will implement this fully later,
-  // for now, we capture and show on error.
-  let output = cmd.output().context("Failed to execute 'cargo build'")?;
-  if !output.status.success() {
-    bail!(
-      "'cargo build' failed:\n--- stdout\n{}\n--- stderr\n{}",
-      String::from_utf8_lossy(&output.stdout),
-      String::from_utf8_lossy(&output.stderr)
-    );
+  // Stream the output for better UX
+  let mut child = cmd.spawn().context("Failed to spawn 'cargo build'")?;
+
+  let stdout = child.stdout.take().unwrap();
+  let stderr = child.stderr.take().unwrap();
+
+  let stdout_thread = thread::spawn(|| {
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+      println!("{}", line.unwrap());
+    }
+  });
+
+  let stderr_thread = thread::spawn(|| {
+    let reader = BufReader::new(stderr);
+    for line in reader.lines() {
+      eprintln!("{}", line.unwrap());
+    }
+  });
+
+  stdout_thread.join().unwrap();
+  stderr_thread.join().unwrap();
+
+  let status = child.wait().context("Failed to wait for 'cargo build'")?;
+
+  if !status.success() {
+    bail!("'cargo build' failed with exit code: {}", status);
   }
+
   Ok(())
 }
 
@@ -293,7 +321,7 @@ fn execute_rpmbuild(
     let final_archive_path = sources_dir.join(archive_filename);
     fs::copy(archive, &final_archive_path)?;
 
-    // THE FIX: Change -ba (build all) to -bb (build binary).
+    // Change -ba (build all) to -bb (build binary).
     // This will only create the binary RPM, not the source RPM.
     cmd.arg("-bb").arg(&final_spec_path);
   } else {
@@ -372,22 +400,77 @@ fn verify_package(
     );
     issues_found += 1;
   }
-  // Add more metadata checks as needed (e.g., license)
 
-  // 2. Verify file manifest
+  // Verify license if configured
+  if let Some(expected_license) = &config.verify_license {
+    let actual_license = metadata.get_license().unwrap_or("N/A");
+    if actual_license != expected_license {
+      log::error!(
+        "Verification failed: License mismatch. Expected '{}', found '{}'",
+        expected_license,
+        actual_license
+      );
+      issues_found += 1;
+    }
+  }
+
+  // Verify summary if configured
+  if let Some(expected_summary) = &config.verify_summary {
+    let actual_summary = metadata.get_summary().unwrap_or("N/A");
+    if actual_summary != expected_summary {
+      log::error!(
+        "Verification failed: Summary mismatch. Expected '{}', found '{}'",
+        expected_summary,
+        actual_summary
+      );
+      issues_found += 1;
+    }
+  }
+
+  // 2. Verify file manifest and permissions
   if let Some(expected_assets) = &config.assets {
-    log::debug!("Verifying package file manifest...");
-    let actual_files: std::collections::HashSet<_> =
-      metadata.get_file_paths()?.into_iter().collect();
+    log::debug!("Verifying package file manifest and permissions...");
+    // Fetch all file metadata at once and create a HashMap for efficient lookups.
+    let actual_files_with_meta: std::collections::HashMap<_, _> = metadata
+      .get_file_entries()?
+      .into_iter()
+      .map(|entry| (entry.path.clone(), entry))
+      .collect();
 
     for asset in expected_assets {
       let expected_path = PathBuf::from(&asset.dest);
-      if !actual_files.contains(&expected_path) {
-        log::error!(
-          "Verification failed: Expected file not found in package: {}",
-          asset.dest
-        );
-        issues_found += 1;
+      match actual_files_with_meta.get(&expected_path) {
+        None => {
+          log::error!(
+            "Verification failed: Expected file not found in package: {}",
+            asset.dest
+          );
+          issues_found += 1;
+        }
+        Some(file_entry) => {
+          // Check permissions if specified in config
+          if let Some(expected_mode_str) = &asset.mode {
+            let expected_mode = u16::from_str_radix(expected_mode_str, 8).with_context(|| {
+              format!(
+                "Invalid octal mode '{}' for asset {}",
+                expected_mode_str, asset.source
+              )
+            })?;
+
+            // Call .permissions() to get the underlying integer value.
+            let actual_permission_bits = file_entry.mode.permissions() & 0o7777;
+
+            if actual_permission_bits != expected_mode {
+              log::error!(
+                "Verification failed: Mode mismatch for file '{}'. Expected '{:o}', found '{:o}'",
+                asset.dest,
+                expected_mode,
+                actual_permission_bits
+              );
+              issues_found += 1;
+            }
+          }
+        }
       }
     }
   }
