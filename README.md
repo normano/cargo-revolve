@@ -1,34 +1,41 @@
 # `cargo-revolve`: The Power of RPM, the Convenience of Cargo
 
-`cargo-revolve` is a Cargo subcommand designed to build RPM packages for Rust projects. It acts as an intelligent orchestrator for the native `rpmbuild` toolchain, embracing the power and flexibility of the `.spec` file while providing seamless integration with your `Cargo.toml`.
+`cargo-revolve` is a Cargo subcommand for building RPM packages from Rust projects. It follows the robust "pre-compiled artifact" model, acting as an intelligent orchestrator for the native `rpmbuild` toolchain. It embraces the full power of the `.spec` file format while providing seamless integration with your `Cargo.toml`.
 
-This tool is for developers and packagers who believe the `.spec` file is the ultimate source of truth for packaging but want the convenience of a Cargo-based workflow.
+This tool is the spiritual successor to the original `cargo-rpm`, modernized for today's Rust development. It is for developers and packagers who need to create production-ready, distributable RPMs without requiring the target build environment to have a Rust toolchain installed.
 
 [![Crates.io](https://img.shields.io/crates/v/cargo-revolve.svg)](https://crates.io/crates/cargo-revolve)
 [![Docs.rs](https://docs.rs/cargo-revolve/badge.svg)](https://docs.rs/cargo-revolve)
 
-## Why `cargo-revolve`?
+## The `cargo-revolve` Philosophy
 
-The Rust ecosystem has several tools for building RPMs, each with a different philosophy. `cargo-revolve` was created to fill a specific, powerful niche.
+`cargo-revolve` believes in a clear separation of concerns:
+1.  **`cargo` compiles your code.** It's the best tool for building Rust binaries.
+2.  **`cargo-revolve` packages the results.** It gathers your compiled binaries and other assets into a source tarball.
+3.  **`rpmbuild` builds the RPM.** It takes the tarball of pre-compiled artifacts and uses your `.spec` file to create the final package.
+
+This workflow is fast, reliable, and does not require `rustc` or `cargo` on your RPM build servers, making it ideal for corporate environments and simplified CI/CD pipelines.
 
 ### How It Compares to Other Solutions
 
 | Tool | Philosophy | Best For | `cargo-revolve` Advantage |
 |---|---|---|---|
-| **`cargo-generate-rpm`** | Declarative (`Cargo.toml` is everything) | Simple projects, CI environments without `rpmbuild`. | **Full Power.** `cargo-revolve` doesn't hide the `.spec` file, giving you access to 100% of RPM's features like complex scriptlets, triggers, and custom macros. You are never limited by what the tool's TOML schema supports. |
-| **Manual Scripts (`Makefile`)** | Platform-Native Tooling | Maximum control, traditional packagers. | **Integration & Safety.** `cargo-revolve` provides a standardized, cross-platform `cargo install` experience. It automatically injects project metadata (version, name, etc.) into your template, eliminating manual synchronization errors. The `--verify` flag provides a post-build safety net that a simple script lacks. |
-| **`cargo-dist`** | Full Release Orchestration | Multi-platform releases (RPM, DEB, MSI) automated in CI. | **Simplicity & Focus.** `cargo-dist` is a powerful release framework. `cargo-revolve` is a focused tool that does one thing exceptionally well: building RPMs. It's the perfect choice when you need to perfect your RPM package without the overhead of a full distribution system. |
+| **`cargo-generate-rpm`** | Declarative (`Cargo.toml` is everything) | Simple projects, CI environments without `rpmbuild`. | **Full Power & Control.** `cargo-revolve` doesn't hide the `.spec` file, giving you access to 100% of RPM's features like complex scriptlets, triggers, and custom macros. You are never limited by the tool's TOML schema. |
+| **"Spec-driven Build"** (e.g., Fedora Packaging) | Let `rpmbuild` compile the code | Official distribution packaging. | **Simplicity & Portability.** `cargo-revolve`'s pre-compiled model means your build servers don't need a Rust toolchain. You ship binaries, not source, which is simpler and often required for proprietary applications. |
+| **`cargo-dist`** | Full Release Orchestration | Multi-platform releases (RPM, DEB, MSI) automated in CI. | **Focus & Depth.** `cargo-dist` is a powerful release framework. `cargo-revolve` is a focused tool that does one thing exceptionally well: building robust, production-grade RPMs. |
 
-**In short, `cargo-revolve` is the best of both worlds:** the expressiveness of a raw `.spec` file and the safety and convenience of an integrated Cargo tool.
+**In short, `cargo-revolve` gives you the expressiveness of a raw `.spec` file with a workflow optimized for distributing compiled Rust applications.**
 
 ## Features
 
-- **`.spec` File Templating:** Uses the powerful [Tera](https://tera.netlify.app/) template engine to inject metadata from your `Cargo.toml` directly into your `.spec` file. No more manual version bumps in two places!
-- **Data-Driven Packaging:** Define your package files once in a simple `assets` list in `Cargo.toml` and use loops in your template to automatically populate the `%install` and `%files` sections. Adding a new config file is a one-line change.
-- **Post-Build Verification:** Use the `--verify` flag to have `cargo-revolve` parse the generated RPM and check its contents against your configuration, catching packaging errors instantly.
-- **Native `rpmbuild` Backend:** Uses the system's `rpmbuild`, ensuring 100% compatibility with all RPM features and build environments.
-- **Developer-Friendly Workflow:** A `--dry-run` flag shows you exactly what would happen, and a `--no-archive` flag allows for faster rebuilds during development.
-- **Built-in Inspector:** Includes an `info` subcommand to quickly inspect the metadata and file list of any `.rpm` file.
+- **Pre-compiled Artifact Workflow:** Compiles your code locally first, then packages the results for `rpmbuild`.
+- **`.spec` File Templating:** Uses the powerful [Tera](https://tera.netlify.app/) template engine to inject metadata from your `Cargo.toml` directly into your `.spec` file.
+- **Data-Driven Packaging:** Define your package files once in an `assets` list in `Cargo.toml` and use loops in your template to automatically populate the `%install` and `%files` sections.
+- **Workspace-Aware:** Correctly locates the `target` directory and package paths, whether in a single crate or a complex workspace.
+- **Post-Build Verification:** The `--verify` flag parses the generated RPMs to ensure their contents match your configuration, catching packaging errors instantly.
+- **Native `rpmbuild` Backend:** Ensures 100% compatibility with all RPM features and build environments.
+- **Developer-Friendly Workflow:** A `--dry-run` flag shows you exactly what would happen.
+- **Built-in Inspector:** The `info` subcommand quickly inspects the metadata and file list of any `.rpm` file.
 
 ## Installation
 
@@ -44,15 +51,18 @@ Ensure that `rpmbuild` is installed on your system.
 
 1.  **Create a `.spec.in` Template**
 
-    Create a template file (e.g., `.revolve/my-app.spec.in`) in your project. This is a normal `.spec` file, but with placeholders for `cargo-revolve` to fill in.
+    Create a template file (e.g., `.revolve/my-app.spec.in`). Note that the `%build` section is empty, as our binary is pre-compiled.
 
     ```spec
+    # Disable automatic debug package generation, which is not needed for pre-compiled binaries.
+    %define debug_package %{nil}
+
     Name:           {{ pkg.name }}
     Version:        {{ pkg.version }}
     Release:        1%{?dist}
     Summary:        {{ pkg.description }}
     License:        {{ pkg.license }}
-    Source0:        {{ pkg.name }}-{{ pkg.version }}.crate
+    Source0:        {{ pkg.name }}-{{ pkg.version }}.tar.gz
 
     %description
     {{ pkg.description }}
@@ -61,50 +71,53 @@ Ensure that `rpmbuild` is installed on your system.
     %setup -q
 
     %build
-    %cargo_build --release --locked
+    # This section is intentionally empty.
 
     %install
     rm -rf %{buildroot}
-    # Loop over the assets defined in Cargo.toml
+    # Loop over the assets from Cargo.toml and install them from the archive root.
     {% for asset in builder.assets %}
-    install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
+    install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source | split(pat="/") | last }}" "%{buildroot}{{ asset.dest }}"
     {% endfor %}
 
     %files
     %defattr(-, root, root, -)
-    # Loop again to list all the files the package owns
+    # List all the files the package owns.
     {% for asset in builder.assets %}
     {{ asset.dest }}
     {% endfor %}
     ```
-    *(Note: `%cargo_build` is a helpful macro from the `rust-packaging` RPM macro set, highly recommended.)*
 
 2.  **Configure `Cargo.toml`**
 
-    Add a `[package.metadata.revolve]` section to your `Cargo.toml`.
+    Add a `[package.metadata.revolve]` section to your `Cargo.toml`. The `source` paths must point to the locations of your assets *after* a successful `cargo build`.
 
     ```toml
     [package.metadata.revolve]
-    # Point to your template file.
     spec_template = ".revolve/my-app.spec.in"
     
-    # List all files to be included in the RPM.
+    # List all asset files to be included in the RPM.
     assets = [
+      # The compiled binary from the target directory.
       { source = "target/release/my-app", dest = "/usr/bin/my-app", mode = "0755" },
-      { source = "config/my-app.service", dest = "/usr/lib/systemd/system/my-app.service" },
+      
+      # A systemd service file from your project.
+      { source = "systemd/my-app.service", dest = "/usr/lib/systemd/system/my-app.service" },
+      
+      # A default configuration file.
       { source = "config/default.toml", dest = "/etc/my-app/default.toml" },
     ]
     ```
 
 3.  **Build!**
 
-    Run the build command from the root of your project.
+    Run the build command from the root of your project. `cargo-revolve` will run `cargo build` for you.
 
     ```bash
     cargo revolve build
     ```
 
-    Your newly built RPM will be in `target/revolve/rpmbuild/RPMS/`.
+    Your newly built RPM(s) will be in the workspace `target/revolve/rpmbuild/RPMS/` directory.
 
 ## Usage
 
@@ -115,9 +128,9 @@ cargo revolve <COMMAND>
 ### Commands
 
 - `cargo revolve build [OPTIONS]`
-  -   `--dry-run`: Prepare everything but skip the final `rpmbuild` call. Prints the rendered `.spec` and the command that would be run.
-  -   `--no-archive`: Build directly from your source tree instead of a `.crate` archive for faster iteration.
-  -   `--verify`: After building, inspect the RPM to ensure its name, version, and file list match your configuration. A powerful CI tool!
+  -   `--dry-run`: Prepare everything but skip `cargo build` and `rpmbuild`. Prints the rendered `.spec` and the `rpmbuild` command that would be run.
+  -   `--verify`: After building, inspect the main binary RPM to ensure its name, version, and file list match your configuration.
+  -   `--no-archive`: (Advanced) Compile and render the spec, but skip the archive and `rpmbuild` steps.
 
 - `cargo revolve info <RPM_FILE>`
   -   Parses the given `.rpm` file and prints its metadata and file manifest.
