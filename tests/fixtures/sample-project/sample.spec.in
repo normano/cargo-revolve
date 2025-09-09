@@ -1,0 +1,22 @@
+Name:           {{ pkg.name }}
+Version:        {{ pkg.version }}
+Release:        1%{?dist}
+Summary:        {{ pkg.description }}
+License:        {{ pkg.license }}
+Source0:        {{ pkg.name }}-{{ pkg.version }}.crate
+
+%description
+{{ pkg.description }}
+
+%prep
+%setup -q
+
+%build
+cargo build --release
+
+%install
+install -D -m 0755 target/release/{{ pkg.name }} %{buildroot}/usr/bin/{{ pkg.name }}
+
+%files
+%defattr(-, root, root, -)
+/usr/bin/{{ pkg.name }}

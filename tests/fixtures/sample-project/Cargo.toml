@@ -1,0 +1,12 @@
+[package]
+name = "sample-project"
+version = "0.1.0"
+edition = "2021"
+description = "A sample project for testing cargo-revolve."
+license = "MIT"
+
+[package.metadata.revolve]
+spec_template = "sample.spec.in"
+assets = [
+  { source = "target/release/sample-project", dest = "/usr/bin/sample-project", mode = "0755" },
+]
