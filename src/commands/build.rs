@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use cargo_metadata::Package as CargoPackage;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use rpm::Package as RpmPackage;
 use tar::Builder;
 use tera::Tera;
@@ -46,7 +46,9 @@ pub fn run(
 
   // 4. Create source archive
   let source_archive_path = if !no_archive {
-    Some(create_artifact_archive(config, package, target_dir, dry_run)?)
+    Some(create_artifact_archive(
+      config, package, target_dir, dry_run,
+    )?)
   } else {
     None
   };
@@ -92,7 +94,7 @@ pub fn run(
     )?;
 
     // 6. Collect artifacts
-    let artifacts = collect_artifacts(&rpmbuild_dir)?;
+    let artifacts = collect_artifacts(&rpmbuild_dir, &config.output_dir, manifest_dir)?;
     if verify {
       log::info!("--verify flag is set, verifying package contents...");
 
@@ -112,8 +114,8 @@ pub fn run(
       } else {
         // Provide a helpful error if we built RPMs but couldn't find the main one.
         bail!(
-            "Verification failed: Could not find the main binary RPM to verify. Found artifacts: {:?}",
-            artifacts
+          "Verification failed: Could not find the main binary RPM to verify. Found artifacts: {:?}",
+          artifacts
         );
       }
     }
@@ -149,7 +151,6 @@ fn render_spec(
         template_path.display()
       )
     })?;
-  
 
   let archive_root_dir = format!("{}-{}", package.name, package.version);
 
@@ -162,7 +163,7 @@ fn render_spec(
     },
     builder: BuilderContext {
       spec_template: &config.spec_template,
-      archive_root_dir: &archive_root_dir, 
+      archive_root_dir: &archive_root_dir,
       assets: config.assets.as_ref(),
       build_flags: config.build_flags.as_ref(),
     },
@@ -218,7 +219,10 @@ fn create_artifact_archive(
         };
 
         if !source_path.exists() {
-          bail!("Asset source file not found: {}. Please run 'cargo build' first or ensure the path is correct.", source_path.display());
+          bail!(
+            "Asset source file not found: {}. Please run 'cargo build' first or ensure the path is correct.",
+            source_path.display()
+          );
         }
         // The destination inside the archive is just the filename.
         let dest_path = Path::new(&archive_root_dir).join(source_path.file_name().unwrap());
@@ -344,8 +348,26 @@ fn execute_rpmbuild(
 }
 
 // collect_artifacts now returns a list of found RPMs
-fn collect_artifacts(rpmbuild_dir: &Path) -> Result<Vec<PathBuf>> {
+fn collect_artifacts(
+  rpmbuild_dir: &Path,
+  output_dir: &Option<String>,
+  project_root: &Path,
+) -> Result<Vec<PathBuf>> {
   log::info!("Collecting build artifacts...");
+
+  // Determine the final destination directory if output_dir is specified
+  let final_output_dir = if let Some(dir_str) = output_dir {
+    let dir = project_root.join(dir_str);
+    log::info!(
+      "Output directory set. Artifacts will be copied to {}",
+      dir.display()
+    );
+    fs::create_dir_all(&dir)
+      .with_context(|| format!("Failed to create output directory at {}", dir.display()))?;
+    Some(dir)
+  } else {
+    None
+  };
 
   let rpms_dir = rpmbuild_dir.join("RPMS");
   let mut found_rpms = Vec::new();
@@ -355,8 +377,26 @@ fn collect_artifacts(rpmbuild_dir: &Path) -> Result<Vec<PathBuf>> {
     for entry in walkdir::WalkDir::new(rpms_dir) {
       let entry = entry.context("Failed to read directory entry")?;
       if entry.path().extension().map_or(false, |e| e == "rpm") {
-        log::info!("Found RPM artifact: {}", entry.path().display());
-        found_rpms.push(entry.path().to_path_buf());
+        let source_path = entry.path();
+        log::info!("Found RPM artifact: {}", source_path.display());
+
+        // If an output directory is configured, copy the artifact there.
+        if let Some(dest_dir) = &final_output_dir {
+          let dest_path = dest_dir.join(source_path.file_name().unwrap());
+          fs::copy(source_path, &dest_path).with_context(|| {
+            format!(
+              "Failed to copy artifact from {} to {}",
+              source_path.display(),
+              dest_path.display()
+            )
+          })?;
+          log::info!("Copied artifact to {}", dest_path.display());
+          // The final artifact path is the destination path.
+          found_rpms.push(dest_path);
+        } else {
+          // Otherwise, the final artifact path is the original source path.
+          found_rpms.push(source_path.to_path_buf());
+        }
       }
     }
   }
