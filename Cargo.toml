@@ -1,9 +1,11 @@
 [package]
 name = "cargo-revolve"
 version = "0.1.0"
-edition = "2021"
-description = "A Cargo subcommand to build RPMs using a .spec template, bridging the gap between Rust projects and native RPM tooling."
+authors = ["Norm O <normo.pub@gmail.com>"]
+edition = "2024"
 license = "MPL-2.0"
+
+description = "A Cargo subcommand to build RPMs using a .spec template, bridging the gap between Rust projects and native RPM tooling."
 keywords = ["cargo", "rpm", "spec", "packaging"]
 categories = ["command-line-utilities", "development-tools"]
 repository = "https://github.com/normano/cargo-revolve"
