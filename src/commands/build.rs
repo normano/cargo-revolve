@@ -7,16 +7,17 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use ignore::WalkBuilder;
 use rpm::Package as RpmPackage;
-use tar::Builder;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tar::Builder;
 use tera::Tera;
 
 /// The main entry point for the `build` command.
 pub fn run(
   config: &RevolveConfig,
   package: &CargoPackage,
+  target_dir: &Path,
   dry_run: bool,
   no_archive: bool,
   verify: bool,
@@ -24,9 +25,7 @@ pub fn run(
   // 1. Environment Check
   check_environment()?;
 
-  if !dry_run {
-    cargo_build(package, &config.build_flags)?;
-  }
+  cargo_build(package, &config.build_flags, target_dir)?;
 
   // 2. Prepare build directories
 
@@ -44,7 +43,7 @@ pub fn run(
 
   // 4. Create source archive
   let source_archive_path = if !no_archive {
-    Some(create_artifact_archive(config, package, dry_run)?)
+    Some(create_artifact_archive(config, package, target_dir, dry_run)?)
   } else {
     None
   };
@@ -186,6 +185,7 @@ fn render_spec(
 fn create_artifact_archive(
   config: &RevolveConfig,
   package: &CargoPackage,
+  target_dir: &Path,
   dry_run: bool,
 ) -> Result<PathBuf> {
   log::info!("Creating artifact archive...");
@@ -201,7 +201,15 @@ fn create_artifact_archive(
 
     if let Some(assets) = &config.assets {
       for asset in assets {
-        let source_path = project_dir.join(&asset.source);
+        let source_path = if asset.source.starts_with("target/") {
+          // This is a build artifact, resolve it from the true target directory.
+          // We strip "target/" from the start of the source path.
+          target_dir.join(asset.source.strip_prefix("target/").unwrap())
+        } else {
+          // This is a project file, resolve it from the project's own directory.
+          project_dir.join(&asset.source)
+        };
+
         if !source_path.exists() {
           bail!("Asset source file not found: {}. Please run 'cargo build' first or ensure the path is correct.", source_path.display());
         }
@@ -216,11 +224,19 @@ fn create_artifact_archive(
 }
 
 // This function will now run `cargo build`
-fn cargo_build(package: &CargoPackage, build_flags: &Option<Vec<String>>) -> Result<()> {
+fn cargo_build(
+  package: &CargoPackage,
+  build_flags: &Option<Vec<String>>,
+  target_dir: &Path,
+) -> Result<()> {
   log::info!("Compiling package with 'cargo build'...");
   let project_dir = package.manifest_path.parent().unwrap().as_std_path();
   let mut cmd = Command::new("cargo");
-  cmd.arg("build").current_dir(project_dir);
+  cmd
+    .arg("build")
+    .current_dir(project_dir)
+    .arg("--target-dir")
+    .arg(target_dir);
 
   if let Some(flags) = build_flags {
     cmd.args(flags);

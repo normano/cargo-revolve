@@ -2,7 +2,7 @@ use crate::config::RevolveConfig;
 use crate::error::Result;
 use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
-use std::fs;
+use std::{env, fs};
 use std::path::PathBuf;
 
 // Declare all our new modules
@@ -138,7 +138,20 @@ fn main() -> Result<()> {
         dry_run,
         no_archive
       );
-      commands::build::run(&revolve_config, root_package, dry_run, no_archive, verify)?;
+      
+      let current_dir = env::current_dir()?;
+      let package = metadata
+        .packages
+        .iter()
+        .find(|p| p.manifest_path.as_std_path().parent().unwrap() == current_dir)
+        .ok_or_else(|| anyhow!("Could not find a Cargo.toml in the current directory"))?;
+
+      // THE FIX: Get the correct target directory from the metadata.
+      let target_dir = metadata.target_directory.as_std_path();
+
+      let revolve_config = load_revolve_config(package.manifest_path.as_std_path())?;
+      // Pass the correct target_dir down to the build command.
+      commands::build::run(&revolve_config, &package.clone(), target_dir, dry_run, no_archive, verify)?;
     }
     Commands::Info { rpm_file } => {
       log::debug!(
