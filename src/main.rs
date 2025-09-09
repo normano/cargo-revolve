@@ -17,21 +17,29 @@ mod error;
 
 #[derive(Parser, Debug)]
 #[command(
-  name = "cargo-revolve",
-  bin_name = "cargo revolve", // This helps with --help output
+  name = "cargo",
+  bin_name = "cargo",
   author,
   version,
-  about = "A Cargo subcommand to build RPMs using a .spec template.",
-  // This is the key change. It tells clap to handle being called as `cargo revolve`
-  // by effectively ignoring the `revolve` part of the arguments.
-  subcommand_required(true),
-  arg_required_else_help(true),
+  about = "A Cargo subcommand to build RPMs using a .spec template."
 )]
-struct Cli {
+struct CargoCli {
+    #[command(subcommand)]
+    command: CargoCommands,
+}
+
+// This enum exists solely to capture the "revolve" subcommand.
+#[derive(Subcommand, Debug)]
+enum CargoCommands {
+    Revolve(RevolveCli),
+}
+
+// This is our ACTUAL application's CLI definition.
+#[derive(Parser, Debug)]
+struct RevolveCli {
   #[command(subcommand)]
   command: Commands,
 
-  /// Enable verbose logging. Use multiple times for more detail (e.g., -vv).
   #[arg(short, long, action = clap::ArgAction::Count, global = true)]
   verbose: u8,
 }
@@ -92,7 +100,7 @@ struct Manifest {
 
 fn main() -> Result<()> {
   // 1. Parse Command-Line Arguments
-  let cli = Cli::parse();
+  let CargoCli { command: CargoCommands::Revolve(cli) } = CargoCli::parse();
 
   // 2. Initialize Logging (globally, based on verbose flag)
   let log_level = match cli.verbose {

@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::config::Asset;
+
 /// Data from the `[package]` section of Cargo.toml, passed to the template.
 #[derive(Serialize)]
 pub struct PkgContext<'a> {
@@ -13,6 +15,13 @@ pub struct PkgContext<'a> {
 #[derive(Serialize)]
 pub struct BuilderContext<'a> {
   pub spec_template: &'a str,
+  
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub assets: Option<&'a Vec<Asset>>,
+  
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub build_flags: Option<&'a Vec<String>>,
+  
 }
 
 /// The top-level context object passed to the Tera templating engine.

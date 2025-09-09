@@ -1,9 +1,12 @@
+# disable the automatic find-debuginfo script.
+%define debug_package %{nil}
+
 Name:           {{ pkg.name }}
-Version:        {{ pkg.version }}
+Version:        {{ pkg.version}}
 Release:        1%{?dist}
 Summary:        {{ pkg.description }}
 License:        {{ pkg.license }}
-Source0:        {{ pkg.name }}-{{ pkg.version }}.crate
+Source0:        {{ pkg.name }}-{{ pkg.version }}.tar.gz
 
 %description
 {{ pkg.description }}
@@ -12,11 +15,16 @@ Source0:        {{ pkg.name }}-{{ pkg.version }}.crate
 %setup -q
 
 %build
-cargo build --release
+# This section is empty as the binary is pre-compiled.
 
 %install
-install -D -m 0755 target/release/{{ pkg.name }} %{buildroot}/usr/bin/{{ pkg.name }}
+rm -rf %{buildroot}
+{% for asset in builder.assets %}
+install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source | split(pat="/") | last }}" "%{buildroot}{{ asset.dest }}"
+{% endfor %}
 
 %files
 %defattr(-, root, root, -)
-/usr/bin/{{ pkg.name }}
+{% for asset in builder.assets %}
+{{ asset.dest }}
+{% endfor %}

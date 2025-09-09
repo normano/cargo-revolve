@@ -26,6 +26,9 @@ log = "0.4"
 # For correctly finding workspace/package info and Cargo.toml paths
 cargo_metadata = "0.18"
 
+flate2 = "1.0"
+tar = "0.4"
+ignore = "0.4"  # For intelligently walking the source tree.
 walkdir = "2.5.0"
 which = "8.0"
 

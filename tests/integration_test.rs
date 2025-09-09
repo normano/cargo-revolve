@@ -15,6 +15,7 @@ fn setup_test() {
 /// This is the key fix for the original panic.
 fn create_revolve_command() -> Command {
   let mut cmd = Command::cargo_bin("cargo-revolve").unwrap();
+  cmd.arg("revolve");
   cmd
 }
 
@@ -27,7 +28,7 @@ fn test_build_happy_path() {
   }
   setup_test();
 
-  let mut cmd = Command::cargo_bin("cargo-revolve").unwrap();
+  let mut cmd = create_revolve_command();
   cmd.current_dir(FIXTURE_DIR).arg("build").assert().success();
 
   let target_dir = Path::new(FIXTURE_DIR).join("target/revolve/rpmbuild/RPMS");

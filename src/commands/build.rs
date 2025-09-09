@@ -3,7 +3,11 @@ use crate::definitions::{BuilderContext, PkgContext, TemplateContext};
 use crate::error::Result;
 use anyhow::{bail, Context};
 use cargo_metadata::Package as CargoPackage;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use ignore::WalkBuilder;
 use rpm::Package as RpmPackage;
+use tar::Builder;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,6 +24,10 @@ pub fn run(
   // 1. Environment Check
   check_environment()?;
 
+  if !dry_run {
+    cargo_build(package, &config.build_flags)?;
+  }
+
   // 2. Prepare build directories
 
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
@@ -34,15 +42,14 @@ pub fn run(
     )
   })?;
 
-  let (rendered_spec_path, rendered_spec_content) = render_spec(config, package, &build_dir)?;
-
   // 4. Create source archive
   let source_archive_path = if !no_archive {
-    Some(create_source_archive(package, dry_run)?)
+    Some(create_artifact_archive(config, package, dry_run)?)
   } else {
-    log::info!("--no-archive specified, skipping 'cargo package'.");
     None
   };
+
+  let (rendered_spec_path, rendered_spec_content) = render_spec(config, package, &build_dir)?;
 
   if dry_run {
     println!("--- Dry Run Activated ---");
@@ -151,6 +158,8 @@ fn render_spec(
     },
     builder: BuilderContext {
       spec_template: &config.spec_template,
+      assets: config.assets.as_ref(),
+      build_flags: config.build_flags.as_ref(),
     },
   })?;
 
@@ -174,42 +183,65 @@ fn render_spec(
   Ok((final_spec_path, rendered))
 }
 
-fn create_source_archive(package: &CargoPackage, dry_run: bool) -> Result<PathBuf> {
-  log::info!("Creating source archive with 'cargo package'...");
+fn create_artifact_archive(
+  config: &RevolveConfig,
+  package: &CargoPackage,
+  dry_run: bool,
+) -> Result<PathBuf> {
+  log::info!("Creating artifact archive...");
   let project_dir = package.manifest_path.parent().unwrap().as_std_path();
-  let crate_filename = format!("{}-{}.crate", package.name, package.version);
-  let crate_path = project_dir.join("target/package").join(crate_filename);
+  let archive_filename = format!("{}-{}.tar.gz", package.name, package.version);
+  let archive_path = project_dir.join("target").join(&archive_filename);
 
   if !dry_run {
-    let output = Command::new("cargo")
-      .arg("package")
-      .arg("--allow-dirty")
-      .current_dir(project_dir)
-      .output()
-      .context("Failed to execute 'cargo package'")?;
+    let gz_file = fs::File::create(&archive_path)?;
+    let encoder = GzEncoder::new(gz_file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let archive_root_dir = format!("{}-{}", package.name, package.version);
 
-    if !output.status.success() {
-      anyhow::bail!(
-        "'cargo package' failed:\n--- stdout\n{}\n--- stderr\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-      );
+    if let Some(assets) = &config.assets {
+      for asset in assets {
+        let source_path = project_dir.join(&asset.source);
+        if !source_path.exists() {
+          bail!("Asset source file not found: {}. Please run 'cargo build' first or ensure the path is correct.", source_path.display());
+        }
+        // The destination inside the archive is just the filename.
+        let dest_path = Path::new(&archive_root_dir).join(source_path.file_name().unwrap());
+        builder.append_path_with_name(&source_path, dest_path)?;
+      }
     }
+    builder.into_inner()?.finish()?;
+  }
+  Ok(archive_path)
+}
 
-    // THE FIX: Move the existence check inside the block that creates the file.
-    if !crate_path.exists() {
-      anyhow::bail!(
-        "Expected to find source archive at {}, but it does not exist.",
-        crate_path.display()
-      );
-    }
-  } else {
-    log::info!("Dry run: skipping 'cargo package' execution.");
+// This function will now run `cargo build`
+fn cargo_build(package: &CargoPackage, build_flags: &Option<Vec<String>>) -> Result<()> {
+  log::info!("Compiling package with 'cargo build'...");
+  let project_dir = package.manifest_path.parent().unwrap().as_std_path();
+  let mut cmd = Command::new("cargo");
+  cmd.arg("build").current_dir(project_dir);
+
+  if let Some(flags) = build_flags {
+    cmd.args(flags);
   }
 
-  // The function still returns the calculated path, which is correct for a dry run.
-  log::info!("Source archive path is {}", crate_path.display());
-  Ok(crate_path)
+  // Default to --release if no flags are provided, as it's the most common case.
+  if build_flags.is_none() {
+    cmd.arg("--release");
+  }
+
+  // Stream the output for better UX. We will implement this fully later,
+  // for now, we capture and show on error.
+  let output = cmd.output().context("Failed to execute 'cargo build'")?;
+  if !output.status.success() {
+    bail!(
+      "'cargo build' failed:\n--- stdout\n{}\n--- stderr\n{}",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+  Ok(())
 }
 
 fn execute_rpmbuild(
