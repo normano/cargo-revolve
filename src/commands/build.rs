@@ -355,13 +355,36 @@ fn execute_rpmbuild(
     cmd.arg("-bb").arg(&final_spec_path).arg(sourcedir_arg);
   }
 
-  let output = cmd.output().context("Failed to execute 'rpmbuild'")?;
+  cmd
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
 
-  println!("{}", String::from_utf8_lossy(&output.stdout));
-  eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+  let mut child = cmd.spawn().context("Failed to spawn 'rpmbuild'")?;
 
-  if !output.status.success() {
-    anyhow::bail!("'rpmbuild' command failed.");
+  let stdout = child.stdout.take().unwrap();
+  let stderr = child.stderr.take().unwrap();
+
+  let stdout_thread = thread::spawn(|| {
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+      println!("{}", line.unwrap());
+    }
+  });
+
+  let stderr_thread = thread::spawn(|| {
+    let reader = BufReader::new(stderr);
+    for line in reader.lines() {
+      eprintln!("{}", line.unwrap());
+    }
+  });
+
+  stdout_thread.join().unwrap();
+  stderr_thread.join().unwrap();
+  
+  let status = child.wait().context("Failed to wait for 'rpmbuild'")?;
+
+  if !status.success() {
+    bail!("'rpmbuild' failed with exit code: {}", status);
   }
 
   log::info!("'rpmbuild' executed successfully.");
