@@ -30,6 +30,7 @@ This workflow is fast, reliable, and does not require `rustc` or `cargo` on your
 
 - **Pre-compiled Artifact Workflow:** Compiles your code locally first, then packages the results for `rpmbuild`.
 - **`.spec` File Templating:** Uses the powerful [Tera](https://tera.netlify.app/) template engine to inject metadata from your `Cargo.toml` directly into your `.spec` file.
+- **Custom Build Command:** Replace the default `cargo build` with your own build script or command (e.g., `cargo leptos build`), perfect for projects with complex build steps like WebAssembly or CSS processing.
 - **Data-Driven Packaging:** Define your package files once in an `assets` list in `Cargo.toml` and use loops in your template to automatically populate the `%install` and `%files` sections.
 - **Automatic Changelog Inclusion:** Reads a changelog file and injects it directly into the spec's `%changelog` section.
 - **Clean Output Directory:** Copies final RPMs to a user-defined directory (e.g., `dist/`) for easy access in CI/CD.
@@ -135,6 +136,78 @@ Ensure that `rpmbuild` is installed on your system.
 
     Your newly built RPM(s) will be in the `dist/` directory, as configured in `Cargo.toml`.
 
+## Advanced Usage: Custom Build Commands
+
+For projects that require more than a simple `cargo build` (e.g., web frontends using tools like `cargo-leptos`, or projects requiring code generation), you can specify a custom `build_command`.
+
+This feature replaces the default build step with commands of your choosing. It works in tandem with the `--no-archive` flag to package artifacts directly from your `target` directory.
+
+1.  **Configure `Cargo.toml` with `build_command`**
+
+    The `build_command` key can be a single command string or an array of commands to be executed sequentially.
+
+    ```toml
+    [package.metadata.revolve]
+    spec_template = ".revolve/leptos-app.spec.in"
+    output_dir = "dist"
+    
+    # Run a custom build tool instead of `cargo build`.
+    # cargo-revolve sets REVOLVE_TARGET_DIR, REVOLVE_PACKAGE_NAME, and REVOLVE_PACKAGE_VERSION
+    # environment variables for your script to use.
+    build_command = "cargo leptos build --release"
+
+    # Define the assets created by the custom command.
+    assets = [
+      { source = "target/server/release/leptos-app", dest = "/usr/bin/leptos-app", mode = "0755" },
+      { source = "target/site", dest = "/var/www/leptos-app" },
+    ]
+    ```
+
+2.  **Create a `--no-archive` Compatible `.spec.in`**
+
+    When using a custom build command, you must use a spec file designed for the `--no-archive` workflow. This spec does not use `Source0` or `%setup`. Instead, it copies files from an absolute path provided by `rpmbuild`'s `%{_sourcedir}` macro.
+
+    ```spec
+    # This spec is for --no-archive builds with pre-built artifacts.
+    Name:           {{ pkg.name }}
+    Version:        {{ pkg.version }}
+    Release:        1%{?dist}
+    Summary:        A Leptos web application
+    License:        MIT
+
+    # This directive tells rpmbuild this is a binary-only package,
+    # disabling source unpacking and preventing default build behaviors.
+    %define _binary_payload w7.gzdio
+
+    %description
+    A web application built with Leptos.
+
+    # These sections are intentionally empty.
+    %prep
+    %build
+
+    %install
+    rm -rf %{buildroot}
+    {% for asset in builder.assets %}
+    # Use the absolute path provided by _sourcedir to locate the artifact.
+    install -D -m {{ asset.mode | default(value="0644") }} "%{_sourcedir}/{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
+    {% endfor %}
+
+    %files
+    %defattr(-, root, root, -)
+    {% for asset in builder.assets %}
+    {{ asset.dest }}
+    {% endfor %}
+    ```
+
+3.  **Build with `--no-archive`**
+
+    You must use the `--no-archive` flag when a `build_command` is specified.
+
+    ```bash
+    cargo revolve build --no-archive --verify
+    ```
+
 ## Usage
 
 ```
@@ -146,7 +219,7 @@ cargo revolve <COMMAND>
 - `cargo revolve build [OPTIONS]`
   -   `--dry-run`: Prepare everything but skip the final `rpmbuild` execution. Prints the rendered `.spec` and the `rpmbuild` command that would be run.
   -   `--verify`: After building, inspect the main binary RPM to ensure its name, version, files, and permissions match your configuration.
-  -   `--no-archive`: (Advanced) Build directly from the source tree without creating a source archive. Requires a spec file that does not use the `%setup` macro.
+  -   `--no-archive`: (Advanced) Build directly from the source tree without creating a source archive. This is the **required mode for custom `build_command` workflows** where artifacts are generated in the project's `target` directory. Requires a spec file that does not use the `%setup` macro and instead copies files from `%{_sourcedir}` in the `%install` section.
 
 - `cargo revolve info <RPM_FILE>`
   -   Parses the given `.rpm` file and prints its metadata and file manifest.

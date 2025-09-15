@@ -1,0 +1,37 @@
+# This spec is designed for --no-archive builds with pre-built artifacts.
+Name:           {{ pkg.name }}
+Version:        {{ pkg.version}}
+Release:        1%{?dist}
+Summary:        A test project
+License:        MIT
+
+# This tells rpmbuild that this is a "binary" package, and it should not
+# look for a Source0 archive or try to do any unpacking.
+# This is the most important directive for this use case.
+%define _binary_payload w7.gzdio
+
+%description
+A test project with a custom build command.
+
+# These sections must exist, but they should be empty. We are telling
+# rpmbuild that WE have handled all preparation and building steps.
+%prep
+
+%build
+
+%install
+# Ensure the build root is clean
+rm -rf %{buildroot}
+
+{% for asset in builder.assets %}
+# The key is to use the absolute path provided by the _sourcedir macro,
+# which points to our project's root directory.
+install -D -m {{ asset.mode | default(value="0644") }} "%{_sourcedir}/{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
+{% endfor %}
+
+%files
+# Use defattr to set default permissions
+%defattr(-, root, root, -)
+{% for asset in builder.assets %}
+{{ asset.dest }}
+{% endfor %}

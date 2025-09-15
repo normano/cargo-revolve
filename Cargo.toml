@@ -1,6 +1,6 @@
 [package]
 name = "cargo-revolve"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Norm O <normo.pub@gmail.com>"]
 edition = "2024"
 license = "MPL-2.0"
@@ -20,8 +20,6 @@ toml = "0.8"
 
 # For ergonomic application-level error handling
 anyhow = "1.0"
-
-# For user-facing logging and diagnostics (--verbose flag)
 env_logger = "0.11"
 log = "0.4"
 
@@ -31,6 +29,7 @@ cargo_metadata = "0.18"
 flate2 = "1.0"
 tar = "0.4"
 ignore = "0.4"  # For intelligently walking the source tree.
+shlex = "1.1.0"
 walkdir = "2.5.0"
 which = "8.0"
 

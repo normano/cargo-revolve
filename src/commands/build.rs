@@ -1,11 +1,12 @@
-use crate::config::RevolveConfig;
+use crate::config::{BuildCommand, RevolveConfig};
 use crate::definitions::{BuilderContext, PkgContext, TemplateContext};
 use crate::error::Result;
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::thread;
 
 use anyhow::{Context, bail};
@@ -28,12 +29,22 @@ pub fn run(
   // 1. Environment Check
   check_environment()?;
 
-  cargo_build(package, &config.build_flags, target_dir)?;
-
-  // 2. Prepare build directories
-
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
   let revolve_dir = manifest_dir.join("target/revolve");
+
+  // 2. Clean up previous build artifacts to ensure a clean slate.
+  // This prevents old RPMs from being counted in the final output.
+  if !dry_run && revolve_dir.exists() {
+    log::info!("Cleaning previous build artifacts from {}", revolve_dir.display());
+    fs::remove_dir_all(&revolve_dir).with_context(|| {
+        format!("Failed to clean previous build directory at {}", revolve_dir.display())
+    })?;
+  }
+
+  execute_build_process(config, package, target_dir, dry_run)?;
+
+  // 3. Prepare build directories
+
   let build_dir = revolve_dir.join("build");
   let rpmbuild_dir = revolve_dir.join("rpmbuild");
 
@@ -255,34 +266,13 @@ fn create_artifact_archive(
   Ok(archive_path)
 }
 
-// This function will now run `cargo build`
-fn cargo_build(
-  package: &CargoPackage,
-  build_flags: &Option<Vec<String>>,
-  target_dir: &Path,
-) -> Result<()> {
-  log::info!("Compiling package with 'cargo build'...");
-  let project_dir = package.manifest_path.parent().unwrap().as_std_path();
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("build")
-    .current_dir(project_dir)
-    .arg("--target-dir")
-    .arg(target_dir)
+/// A helper to spawn a command, stream its output, and wait for it to complete.
+fn stream_command(cmd: &mut Command) -> Result<ExitStatus> {
+  let mut child = cmd
     .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
-
-  if let Some(flags) = build_flags {
-    cmd.args(flags);
-  }
-
-  // Default to --release if no flags are provided, as it's the most common case.
-  if build_flags.is_none() {
-    cmd.arg("--release");
-  }
-
-  // Stream the output for better UX
-  let mut child = cmd.spawn().context("Failed to spawn 'cargo build'")?;
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .context(format!("Failed to spawn command: {:?}", cmd))?;
 
   let stdout = child.stdout.take().unwrap();
   let stderr = child.stderr.take().unwrap();
@@ -304,14 +294,114 @@ fn cargo_build(
   stdout_thread.join().unwrap();
   stderr_thread.join().unwrap();
 
-  let status = child.wait().context("Failed to wait for 'cargo build'")?;
+  let status = child
+    .wait()
+    .context(format!("Failed to wait for command: {:?}", cmd))?;
 
-  if !status.success() {
-    bail!("'cargo build' failed with exit code: {}", status);
+  Ok(status)
+}
+
+fn execute_build_process(
+  config: &RevolveConfig,
+  package: &CargoPackage,
+  target_dir: &Path,
+  dry_run: bool,
+) -> Result<()> {
+  let project_dir = package.manifest_path.parent().unwrap().as_std_path();
+
+  // If a custom build command is specified, use it.
+  if let Some(build_command) = &config.build_command {
+    if dry_run {
+      println!("\n--- Dry Run: Build Step ---");
+      println!("The following build command(s) would be executed:");
+      match build_command {
+        BuildCommand::Single(cmd) => println!("  - {}", cmd),
+        BuildCommand::Sequence(cmds) => {
+          for cmd in cmds {
+            println!("  - {}", cmd);
+          }
+        }
+      }
+      return Ok(());
+    }
+
+    log::info!("Executing custom build command(s)...");
+
+    // Create a `let` binding for the version string to extend its lifetime.
+    let package_version_str = package.version.to_string();
+
+    // Set environment variables for the custom command context.
+    let mut env_vars = HashMap::new();
+    env_vars.insert("REVOLVE_TARGET_DIR", target_dir.as_os_str());
+    env_vars.insert("REVOLVE_PACKAGE_NAME", package.name.as_ref());
+    // Now we use a reference to the `package_version_str` which has a valid lifetime.
+    env_vars.insert("REVOLVE_PACKAGE_VERSION", package_version_str.as_ref());
+
+    // --- START: FIX 2 ---
+    // We need to work with references to the strings to avoid cloning and ownership issues.
+    let commands: Vec<&String> = match build_command {
+      BuildCommand::Single(cmd) => vec![cmd],
+      BuildCommand::Sequence(cmds) => cmds.iter().collect(),
+    };
+    // --- END: FIX 2 ---
+
+    for command_str in commands {
+      log::info!("Running: `{}`", command_str);
+
+      // Use shlex to safely parse the command string.
+      let parts = shlex::split(command_str).ok_or_else(|| {
+        anyhow::anyhow!("Failed to parse command string: {}", command_str)
+      })?;
+      if parts.is_empty() {
+        continue; // Skip empty commands
+      }
+
+      let mut cmd = Command::new(&parts[0]);
+      cmd
+        .args(&parts[1..])
+        .current_dir(project_dir)
+        .envs(&env_vars);
+
+      let status = stream_command(&mut cmd)?;
+
+      if !status.success() {
+        bail!(
+          "Custom build command failed with exit code {}: `{}`",
+          status,
+          command_str
+        );
+      }
+    }
+  } else {
+    // Fallback to the default `cargo build` behavior.
+    log::info!("Compiling package with 'cargo build'...");
+    let mut cmd = Command::new("cargo");
+    cmd
+      .arg("build")
+      .current_dir(project_dir)
+      .arg("--target-dir")
+      .arg(target_dir);
+
+    // `build_flags` are only used in the default case.
+    if let Some(flags) = &config.build_flags {
+      cmd.args(flags);
+    }
+
+    // Default to --release if no flags are provided.
+    if config.build_flags.is_none() {
+      cmd.arg("--release");
+    }
+
+    let status = stream_command(&mut cmd)?;
+
+    if !status.success() {
+      bail!("'cargo build' failed with exit code: {}", status);
+    }
   }
 
   Ok(())
 }
+
 
 fn execute_rpmbuild(
   archive_path: Option<&Path>,
@@ -355,33 +445,8 @@ fn execute_rpmbuild(
     cmd.arg("-bb").arg(&final_spec_path).arg(sourcedir_arg);
   }
 
-  cmd
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
-
-  let mut child = cmd.spawn().context("Failed to spawn 'rpmbuild'")?;
-
-  let stdout = child.stdout.take().unwrap();
-  let stderr = child.stderr.take().unwrap();
-
-  let stdout_thread = thread::spawn(|| {
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-      println!("{}", line.unwrap());
-    }
-  });
-
-  let stderr_thread = thread::spawn(|| {
-    let reader = BufReader::new(stderr);
-    for line in reader.lines() {
-      eprintln!("{}", line.unwrap());
-    }
-  });
-
-  stdout_thread.join().unwrap();
-  stderr_thread.join().unwrap();
-  
-  let status = child.wait().context("Failed to wait for 'rpmbuild'")?;
+  // Use the new `stream_command` helper here for consistency.
+  let status = stream_command(&mut cmd)?;
 
   if !status.success() {
     bail!("'rpmbuild' failed with exit code: {}", status);

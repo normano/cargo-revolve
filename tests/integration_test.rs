@@ -1,4 +1,6 @@
-use assert_cmd::Command;
+mod common;
+
+use common::create_revolve_command;
 use serial_test::serial;
 use std::fs;
 use std::path::Path;
@@ -11,14 +13,6 @@ fn setup_test() {
   let fixture_path = Path::new(FIXTURE_DIR);
   let _ = fs::remove_dir_all(fixture_path.join("target"));
   let _ = fs::remove_dir_all(fixture_path.join("dist"));
-}
-
-/// Helper to create the command correctly, simulating `cargo revolve ...`.
-/// This is the key fix for the original panic.
-fn create_revolve_command() -> Command {
-  let mut cmd = Command::cargo_bin("cargo-revolve").unwrap();
-  cmd.arg("revolve");
-  cmd
 }
 
 #[test]

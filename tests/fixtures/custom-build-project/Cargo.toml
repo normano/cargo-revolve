@@ -1,0 +1,13 @@
+[package]
+name = "custom-build-project"
+version = "1.0.0"
+edition = "2021"
+
+[package.metadata.revolve]
+spec_template = "custom.spec.in"
+# Use a simple shell command for our test
+build_command = "sh ./build-script.sh"
+assets = [
+  # This asset is CREATED by our build script
+  { source = "target/custom-artifact.txt", dest = "/usr/share/custom/artifact.txt" },
+]
