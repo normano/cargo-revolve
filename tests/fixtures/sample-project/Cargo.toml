@@ -11,4 +11,5 @@ output_dir = "dist"
 changelog = "CHANGELOG.md"
 assets = [
   { source = "target/release/sample-project", dest = "/usr/bin/sample-project", mode = "0755" },
+  { source = "config/", dest = "/etc/sample-project/conf.d/" },
 ]

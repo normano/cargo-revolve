@@ -1,4 +1,4 @@
-use crate::config::{BuildCommand, RevolveConfig};
+use crate::config::{Asset, BuildCommand, RevolveConfig};
 use crate::definitions::{BuilderContext, PkgContext, TemplateContext};
 use crate::error::Result;
 
@@ -16,6 +16,7 @@ use flate2::write::GzEncoder;
 use rpm::Package as RpmPackage;
 use tar::Builder;
 use tera::Tera;
+use walkdir::WalkDir;
 
 /// The main entry point for the `build` command.
 pub fn run(
@@ -30,18 +31,54 @@ pub fn run(
   check_environment()?;
 
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
+
+  // Create a mutable copy of the config so we can replace the assets list.
+  let mut mutable_config = config; // This is a reference, not a deep clone.
+  let mut expanded_assets_config: Option<RevolveConfig> = None;
+
+  if let Some(initial_assets) = &config.assets {
+    log::info!("Expanding directory assets...");
+    let final_assets = expand_assets(initial_assets, manifest_dir)?;
+    log::info!(
+      "Asset expansion complete. Total file assets: {}",
+      final_assets.len()
+    );
+
+    // Create a new owned RevolveConfig with the expanded assets.
+    // This is necessary because `config` is a borrowed reference.
+    expanded_assets_config = Some(RevolveConfig {
+      spec_template: config.spec_template.clone(),
+      output_dir: config.output_dir.clone(),
+      changelog: config.changelog.clone(),
+      build_flags: config.build_flags.clone(),
+      assets: Some(final_assets), // Use the new expanded list.
+      verify_license: config.verify_license.clone(),
+      verify_summary: config.verify_summary.clone(),
+      build_command: config.build_command.clone(), // You will need to derive Clone for BuildCommand
+    });
+    // Point our mutable_config to the new, owned config struct.
+    mutable_config = expanded_assets_config.as_ref().unwrap();
+  }
+  // All subsequent code will now use `mutable_config` which has the expanded asset list.
+
   let revolve_dir = manifest_dir.join("target/revolve");
 
   // 2. Clean up previous build artifacts to ensure a clean slate.
   // This prevents old RPMs from being counted in the final output.
   if !dry_run && revolve_dir.exists() {
-    log::info!("Cleaning previous build artifacts from {}", revolve_dir.display());
+    log::info!(
+      "Cleaning previous build artifacts from {}",
+      revolve_dir.display()
+    );
     fs::remove_dir_all(&revolve_dir).with_context(|| {
-        format!("Failed to clean previous build directory at {}", revolve_dir.display())
+      format!(
+        "Failed to clean previous build directory at {}",
+        revolve_dir.display()
+      )
     })?;
   }
 
-  execute_build_process(config, package, target_dir, dry_run)?;
+  execute_build_process(mutable_config, package, target_dir, dry_run)?;
 
   // 3. Prepare build directories
 
@@ -58,13 +95,13 @@ pub fn run(
   // 4. Create source archive
   let source_archive_path = if !no_archive {
     Some(create_artifact_archive(
-      config, package, target_dir, dry_run,
+      mutable_config, package, target_dir, dry_run,
     )?)
   } else {
     None
   };
 
-  let (rendered_spec_path, rendered_spec_content) = render_spec(config, package, &build_dir)?;
+  let (rendered_spec_path, rendered_spec_content) = render_spec(mutable_config, package, &build_dir)?;
 
   if dry_run {
     println!("--- Dry Run Activated ---");
@@ -105,7 +142,7 @@ pub fn run(
     )?;
 
     // 6. Collect artifacts
-    let artifacts = collect_artifacts(&rpmbuild_dir, &config.output_dir, manifest_dir)?;
+    let artifacts = collect_artifacts(&rpmbuild_dir, &mutable_config.output_dir, manifest_dir)?;
     if verify {
       log::info!("--verify flag is set, verifying package contents...");
 
@@ -121,7 +158,7 @@ pub fn run(
       });
 
       if let Some(rpm_path) = main_binary_rpm {
-        verify_package(rpm_path, package, config)?;
+        verify_package(rpm_path, package, mutable_config)?;
       } else {
         // Provide a helpful error if we built RPMs but couldn't find the main one.
         bail!(
@@ -349,9 +386,8 @@ fn execute_build_process(
       log::info!("Running: `{}`", command_str);
 
       // Use shlex to safely parse the command string.
-      let parts = shlex::split(command_str).ok_or_else(|| {
-        anyhow::anyhow!("Failed to parse command string: {}", command_str)
-      })?;
+      let parts = shlex::split(command_str)
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse command string: {}", command_str))?;
       if parts.is_empty() {
         continue; // Skip empty commands
       }
@@ -401,7 +437,6 @@ fn execute_build_process(
 
   Ok(())
 }
-
 
 fn execute_rpmbuild(
   archive_path: Option<&Path>,
@@ -631,4 +666,79 @@ fn verify_package(
   }
 
   Ok(())
+}
+
+/// Expands assets with trailing slashes into a list of file-only assets.
+/// This function walks the source directory and creates an asset for each file found.
+/// It also handles deduplication based on the final destination path.
+fn expand_assets(initial_assets: &[Asset], project_root: &Path) -> Result<Vec<Asset>> {
+  let mut final_assets = Vec::new();
+  // Used to detect assets that would overwrite each other in the final package.
+  let mut destination_map: HashMap<PathBuf, String> = HashMap::new();
+
+  for asset in initial_assets {
+    // A trailing slash is the convention for a directory.
+    if asset.source.ends_with('/') {
+      let source_dir_path = project_root.join(&asset.source);
+      if !source_dir_path.is_dir() {
+        bail!(
+          "Asset source '{}' is marked as a directory (ends with '/') but is not a directory on disk.",
+          asset.source
+        );
+      }
+
+      log::debug!("Expanding directory asset: {}", asset.source);
+
+      // Walk the directory recursively.
+      for entry in WalkDir::new(&source_dir_path).min_depth(1) {
+        let entry = entry?;
+        let entry_path = entry.path();
+
+        if entry_path.is_file() {
+          // Calculate the file's path relative to the source directory.
+          let relative_path = entry_path.strip_prefix(&source_dir_path)?;
+
+          // Create the final destination path for this file.
+          let dest_path = PathBuf::from(&asset.dest).join(relative_path);
+
+          // Check for duplicates.
+          if let Some(existing_source) = destination_map.get(&dest_path) {
+            bail!(
+              "Duplicate asset destination found: '{}'.\n  - Provided by source: '{}'\n  - Also provided by source: '{}'",
+              dest_path.display(),
+              existing_source,
+              asset.source,
+            );
+          }
+          destination_map.insert(dest_path.clone(), asset.source.clone());
+
+          // Create the new, expanded asset for this file.
+          final_assets.push(Asset {
+            // The source path needs to be relative to the project root.
+            source: entry_path
+              .strip_prefix(project_root)?
+              .to_string_lossy()
+              .into_owned(),
+            dest: dest_path.to_string_lossy().into_owned(),
+            mode: asset.mode.clone(),
+          });
+        }
+      }
+    } else {
+      // This is a single file asset, check for duplicates and add it.
+      let dest_path = PathBuf::from(&asset.dest);
+      if let Some(existing_source) = destination_map.get(&dest_path) {
+        bail!(
+          "Duplicate asset destination found: '{}'.\n  - Provided by source: '{}'\n  - Also provided by source: '{}'",
+          dest_path.display(),
+          existing_source,
+          asset.source,
+        );
+      }
+      destination_map.insert(dest_path, asset.source.clone());
+      final_assets.push(asset.clone());
+    }
+  }
+
+  Ok(final_assets)
 }

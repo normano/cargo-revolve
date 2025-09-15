@@ -1,9 +1,10 @@
 mod common;
 
 use common::create_revolve_command;
+use rpm::Package;
 use serial_test::serial;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const FIXTURE_DIR: &str = "tests/fixtures/sample-project";
 
@@ -106,12 +107,20 @@ fn test_dry_run() {
 
 #[test]
 #[serial]
-fn test_build_copies_to_output_dir() {
+fn test_build_expands_directory_assets_and_copies_to_output_dir() {
   if which::which("rpmbuild").is_err() {
     println!("SKIPPING TEST: `rpmbuild` command not found in PATH.");
     return;
   }
   setup_test();
+
+  // Create the fixture directory and files for the test
+  let fixture_path = Path::new(FIXTURE_DIR);
+  let config_dir = fixture_path.join("config");
+  fs::create_dir_all(&config_dir).unwrap();
+  fs::write(config_dir.join("app.toml"), "port = 8080").unwrap();
+  fs::write(config_dir.join("database.toml"), "host = \"localhost\"").unwrap();
+
 
   let mut cmd = create_revolve_command();
   cmd.current_dir(FIXTURE_DIR).arg("build").assert().success();
@@ -119,20 +128,47 @@ fn test_build_copies_to_output_dir() {
   let output_dir = Path::new(FIXTURE_DIR).join("dist");
   assert!(output_dir.exists(), "RPM output directory 'dist' was not created");
 
-  let rpm_files: Vec<_> = walkdir::WalkDir::new(&output_dir)
+  // Find the generated RPM file in the output directory.
+  let rpm_path = walkdir::WalkDir::new(&output_dir)
     .into_iter()
     .filter_map(|e| e.ok())
-    .filter(|e| e.path().extension().map_or(false, |ext| ext == "rpm"))
-    .collect();
+    .find(|e| {
+        let filename = e.file_name().to_string_lossy();
+        filename.starts_with("sample-project-0.1.0") 
+            && filename.ends_with(".rpm")
+            && !filename.contains("debuginfo")
+            && !filename.contains("debugsource")
+    })
+    .map(|e| e.into_path())
+    .expect("Expected binary RPM file was not found in the 'dist' directory");
+    
+  // --- START: NEW ASSERTIONS ---
+  // Use the `rpm` crate to inspect the package contents.
+  let package = Package::open(&rpm_path)
+      .unwrap_or_else(|_| panic!("Failed to open and parse RPM at {}", rpm_path.display()));
 
-  assert!(!rpm_files.is_empty(), "Expected at least one RPM file to be copied to the output directory");
+  let file_paths: Vec<PathBuf> = package.metadata.get_file_paths().unwrap();
 
-  let expected_binary_rpm_name = "sample-project-0.1.0-1";
-  let binary_rpm_exists = rpm_files.iter().any(|entry| {
-    entry.file_name().to_string_lossy().starts_with(expected_binary_rpm_name)
-  });
+  // 1. Verify the binary is present.
+  assert!(
+      file_paths.contains(&PathBuf::from("/usr/bin/sample-project")),
+      "RPM missing binary: /usr/bin/sample-project"
+  );
+  
+  // 2. Verify the expanded directory contents are present.
+  let expected_config1 = PathBuf::from("/etc/sample-project/conf.d/app.toml");
+  let expected_config2 = PathBuf::from("/etc/sample-project/conf.d/database.toml");
 
-  assert!(binary_rpm_exists, "The expected binary RPM was not found in the 'dist' directory.");
+  assert!(
+      file_paths.contains(&expected_config1),
+      "RPM missing expanded file: {}", expected_config1.display()
+  );
+  assert!(
+      file_paths.contains(&expected_config2),
+      "RPM missing expanded file: {}", expected_config2.display()
+  );
+  
+  println!("Successfully verified RPM contents: {:?}", file_paths);
 }
 
 #[test]

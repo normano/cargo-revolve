@@ -30,6 +30,7 @@ This workflow is fast, reliable, and does not require `rustc` or `cargo` on your
 
 - **Pre-compiled Artifact Workflow:** Compiles your code locally first, then packages the results for `rpmbuild`.
 - **`.spec` File Templating:** Uses the powerful [Tera](https://tera.netlify.app/) template engine to inject metadata from your `Cargo.toml` directly into your `.spec` file.
+- **Automatic Directory Expansion:** Intelligently include the contents of entire directories by adding a trailing slash to the `source` path in your `assets` list (e.g., `"config/"`). `cargo-revolve` will recursively find all files and map them to the correct destinations in the final RPM.
 - **Custom Build Command:** Replace the default `cargo build` with your own build script or command (e.g., `cargo leptos build`), perfect for projects with complex build steps like WebAssembly or CSS processing.
 - **Data-Driven Packaging:** Define your package files once in an `assets` list in `Cargo.toml` and use loops in your template to automatically populate the `%install` and `%files` sections.
 - **Automatic Changelog Inclusion:** Reads a changelog file and injects it directly into the spec's `%changelog` section.
@@ -54,7 +55,7 @@ Ensure that `rpmbuild` is installed on your system.
 
 1.  **Create a `.spec.in` Template**
 
-    Create a template file (e.g., `.revolve/my-app.spec.in`). Note that the `%build` section is empty, as our binary is pre-compiled.
+    Create a template file (e.g., `.revolve/my-app.spec.in`). Note that the `%build` section is empty, as our binary is pre-compiled. This simple template works for both files and directories, thanks to `cargo-revolve`'s asset expansion.
 
     ```spec
     # Disable automatic debug package generation, which is not needed for pre-compiled binaries.
@@ -80,6 +81,7 @@ Ensure that `rpmbuild` is installed on your system.
     %install
     rm -rf %{buildroot}
     # Loop over the assets from Cargo.toml and install them from the archive root.
+    # cargo-revolve expands directories into a flat list of files for this loop.
     {% for asset in builder.assets %}
     install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source | split(pat="/") | last }}" "%{buildroot}{{ asset.dest }}"
     {% endfor %}
@@ -113,16 +115,17 @@ Ensure that `rpmbuild` is installed on your system.
     # (Optional) Read this file's content into the template's `builder.changelog` variable.
     changelog = "CHANGELOG.md"
 
-    # List all asset files to be included in the RPM.
+    # List all asset files and directories to be included in the RPM.
     assets = [
-      # The compiled binary from the target directory.
+      # The compiled binary (a file).
       { source = "target/release/my-app", dest = "/usr/bin/my-app", mode = "0755" },
       
-      # A systemd service file from your project.
+      # A systemd service file (a file).
       { source = "systemd/my-app.service", dest = "/usr/lib/systemd/system/my-app.service" },
       
-      # A default configuration file.
-      { source = "config/default.toml", dest = "/etc/my-app/default.toml" },
+      # Include an entire configuration directory.
+      # The trailing slash tells cargo-revolve to expand this into individual file assets.
+      { source = "config/", dest = "/etc/my-app/conf.d/" },
     ]
     ```
 
@@ -157,9 +160,10 @@ This feature replaces the default build step with commands of your choosing. It 
     build_command = "cargo leptos build --release"
 
     # Define the assets created by the custom command.
+    # The directory expansion feature works here too!
     assets = [
       { source = "target/server/release/leptos-app", dest = "/usr/bin/leptos-app", mode = "0755" },
-      { source = "target/site", dest = "/var/www/leptos-app" },
+      { source = "target/site/", dest = "/var/www/leptos-app/" },
     ]
     ```
 
@@ -188,9 +192,10 @@ This feature replaces the default build step with commands of your choosing. It 
 
     %install
     rm -rf %{buildroot}
+    # Even in --no-archive mode, the simple loop works because cargo-revolve expands directory assets.
     {% for asset in builder.assets %}
     # Use the absolute path provided by _sourcedir to locate the artifact.
-    install -D -m {{ asset.mode | default(value="0644") }} "%{_sourcedir}/{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
+    install -D -m {{ asset.mode | default(value="0644") }} "%{_sourcededir}/{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
     {% endfor %}
 
     %files

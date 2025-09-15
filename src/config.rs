@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Represents a single asset to be packaged, from the `assets` array.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Asset {
   pub source: String,
   pub dest: String,
@@ -9,7 +9,7 @@ pub struct Asset {
 }
 
 /// Represents the `build_command` which can be a single command or a sequence.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum BuildCommand {
   Single(String),
