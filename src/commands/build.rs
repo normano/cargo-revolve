@@ -2,7 +2,7 @@ use crate::config::{Asset, BuildCommand, RevolveConfig};
 use crate::definitions::{BuilderContext, PkgContext, TemplateContext};
 use crate::error::Result;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -35,14 +35,18 @@ pub fn run(
   // Create a mutable copy of the config so we can replace the assets list.
   let mut mutable_config = config; // This is a reference, not a deep clone.
   let mut expanded_assets_config: Option<RevolveConfig> = None;
+  let mut created_dirs: Option<Vec<String>> = None;
 
   if let Some(initial_assets) = &config.assets {
-    log::info!("Expanding directory assets...");
-    let final_assets = expand_assets(initial_assets, manifest_dir)?;
-    log::info!(
-      "Asset expansion complete. Total file assets: {}",
-      final_assets.len()
-    );
+      log::info!("Expanding directory assets...");
+      // Capture both the files and the directories.
+      let (final_assets, dirs) = expand_assets(initial_assets, manifest_dir)?;
+      created_dirs = Some(dirs); // Store the discovered directories.
+      log::info!(
+          "Asset expansion complete. Found {} file assets and {} unique directories.", 
+          final_assets.len(),
+          created_dirs.as_ref().unwrap().len()
+      );
 
     // Create a new owned RevolveConfig with the expanded assets.
     // This is necessary because `config` is a borrowed reference.
@@ -101,7 +105,8 @@ pub fn run(
     None
   };
 
-  let (rendered_spec_path, rendered_spec_content) = render_spec(mutable_config, package, &build_dir)?;
+  let (rendered_spec_path, rendered_spec_content) = render_spec(mutable_config, package, &build_dir,
+    created_dirs)?;
 
   if dry_run {
     println!("--- Dry Run Activated ---");
@@ -185,6 +190,7 @@ fn render_spec(
   config: &RevolveConfig,
   package: &CargoPackage,
   build_dir: &Path,
+  created_dirs: Option<Vec<String>>, 
 ) -> Result<(PathBuf, String)> {
   log::info!("Rendering .spec template...");
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
@@ -235,6 +241,7 @@ fn render_spec(
       changelog: changelog_content.as_deref(),
       assets: config.assets.as_ref(),
       build_flags: config.build_flags.as_ref(),
+      created_dirs,
     },
   })?;
 
@@ -670,11 +677,15 @@ fn verify_package(
 
 /// Expands assets with trailing slashes into a list of file-only assets.
 /// This function walks the source directory and creates an asset for each file found.
-/// It also handles deduplication based on the final destination path.
-fn expand_assets(initial_assets: &[Asset], project_root: &Path) -> Result<Vec<Asset>> {
+/// It also handles deduplication and returns a list of all unique parent directories.
+fn expand_assets(
+  initial_assets: &[Asset],
+  project_root: &Path,
+) -> Result<(Vec<Asset>, Vec<String>)> {
+
   let mut final_assets = Vec::new();
-  // Used to detect assets that would overwrite each other in the final package.
   let mut destination_map: HashMap<PathBuf, String> = HashMap::new();
+  let mut unique_dirs: HashSet<PathBuf> = HashSet::new();
 
   for asset in initial_assets {
     // A trailing slash is the convention for a directory.
@@ -689,56 +700,82 @@ fn expand_assets(initial_assets: &[Asset], project_root: &Path) -> Result<Vec<As
 
       log::debug!("Expanding directory asset: {}", asset.source);
 
+      if asset.mkdir {
+        let top_level_dest_dir = PathBuf::from(&asset.dest);
+        unique_dirs.insert(top_level_dest_dir.clone());
+      }
+
       // Walk the directory recursively.
-      for entry in WalkDir::new(&source_dir_path).min_depth(1) {
+      for entry in WalkDir::new(&source_dir_path) { // <-- Don't use min_depth(1) so we can create empty dirs
         let entry = entry?;
         let entry_path = entry.path();
 
-        if entry_path.is_file() {
-          // Calculate the file's path relative to the source directory.
-          let relative_path = entry_path.strip_prefix(&source_dir_path)?;
+        // Calculate the file's path relative to the source directory.
+        let relative_path = entry_path.strip_prefix(&source_dir_path)?;
 
-          // Create the final destination path for this file.
-          let dest_path = PathBuf::from(&asset.dest).join(relative_path);
+        // Create the final destination path for this entry.
+        let dest_path = PathBuf::from(&asset.dest).join(relative_path);
 
-          // Check for duplicates.
-          if let Some(existing_source) = destination_map.get(&dest_path) {
-            bail!(
-              "Duplicate asset destination found: '{}'.\n  - Provided by source: '{}'\n  - Also provided by source: '{}'",
-              dest_path.display(),
-              existing_source,
-              asset.source,
-            );
+        // If it's a directory, just add it to our set and continue.
+        if entry_path.is_dir() {
+          if asset.mkdir {
+            unique_dirs.insert(dest_path);
           }
-          destination_map.insert(dest_path.clone(), asset.source.clone());
-
-          // Create the new, expanded asset for this file.
-          final_assets.push(Asset {
-            // The source path needs to be relative to the project root.
-            source: entry_path
-              .strip_prefix(project_root)?
-              .to_string_lossy()
-              .into_owned(),
-            dest: dest_path.to_string_lossy().into_owned(),
-            mode: asset.mode.clone(),
-          });
+          continue;
         }
+
+        // Check for duplicates.
+        if let Some(existing_source) = destination_map.get(&dest_path) {
+          bail!(
+            "Duplicate asset destination found: '{}'.\n  - Provided by source: '{}'\n  - Also provided by source: '{}'",
+            dest_path.display(),
+            existing_source,
+            asset.source,
+          );
+        }
+        destination_map.insert(dest_path.clone(), asset.source.clone());
+
+        // Create the new, expanded asset for this file.
+        final_assets.push(Asset {
+          source: entry_path.strip_prefix(project_root)?.to_string_lossy().into_owned(),
+          dest: dest_path.to_string_lossy().into_owned(),
+          mode: asset.mode.clone(),
+          mkdir: asset.mkdir, 
+        });
       }
     } else {
-      // This is a single file asset, check for duplicates and add it.
+      // This is a single file asset.
       let dest_path = PathBuf::from(&asset.dest);
+      
+      // Only add its parent directory if the mkdir flag is true.
+      if asset.mkdir {
+        if let Some(parent) = dest_path.parent() {
+          if parent.components().next().is_some() {
+             unique_dirs.insert(parent.to_path_buf());
+          }
+        }
+      }
+
       if let Some(existing_source) = destination_map.get(&dest_path) {
-        bail!(
-          "Duplicate asset destination found: '{}'.\n  - Provided by source: '{}'\n  - Also provided by source: '{}'",
-          dest_path.display(),
-          existing_source,
-          asset.source,
-        );
+         bail!(
+            "Duplicate asset destination found: '{}'.\n  - Provided by source: '{}'\n  - Also provided by source: '{}'",
+            dest_path.display(),
+            existing_source,
+            asset.source,
+          );
       }
       destination_map.insert(dest_path, asset.source.clone());
       final_assets.push(asset.clone());
     }
   }
 
-  Ok(final_assets)
+  // Convert the set of PathBufs to a sorted Vec of Strings.
+  let mut sorted_dirs: Vec<String> = unique_dirs
+    .into_iter()
+    .map(|p| p.to_string_lossy().into_owned())
+    .collect();
+  sorted_dirs.sort();
+
+  Ok((final_assets, sorted_dirs))
 }
+

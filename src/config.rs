@@ -6,6 +6,13 @@ pub struct Asset {
   pub source: String,
   pub dest: String,
   pub mode: Option<String>,
+  #[serde(default = "default_mkdir")]
+  pub mkdir: bool,
+}
+
+// This function provides the default value for `mkdir` to serde.
+fn default_mkdir() -> bool {
+    true
 }
 
 /// Represents the `build_command` which can be a single command or a sequence.

@@ -31,6 +31,8 @@ This workflow is fast, reliable, and does not require `rustc` or `cargo` on your
 - **Pre-compiled Artifact Workflow:** Compiles your code locally first, then packages the results for `rpmbuild`.
 - **`.spec` File Templating:** Uses the powerful [Tera](https://tera.netlify.app/) template engine to inject metadata from your `Cargo.toml` directly into your `.spec` file.
 - **Automatic Directory Expansion:** Intelligently include the contents of entire directories by adding a trailing slash to the `source` path in your `assets` list (e.g., `"config/"`). `cargo-revolve` will recursively find all files and map them to the correct destinations in the final RPM.
+- **Automatic Directory Ownership:** The tool automatically discovers all directories required by your assets and generates the necessary `%dir` directives in the spec file, ensuring correct ownership.
+- **Safe System Directories:** For assets installed into shared system directories (e.g., `/usr/lib/systemd/system`), you can use the `mkdir = false` flag to prevent the package from dangerously taking ownership of them.
 - **Custom Build Command:** Replace the default `cargo build` with your own build script or command (e.g., `cargo leptos build`), perfect for projects with complex build steps like WebAssembly or CSS processing.
 - **Data-Driven Packaging:** Define your package files once in an `assets` list in `Cargo.toml` and use loops in your template to automatically populate the `%install` and `%files` sections.
 - **Automatic Changelog Inclusion:** Reads a changelog file and injects it directly into the spec's `%changelog` section.
@@ -55,10 +57,10 @@ Ensure that `rpmbuild` is installed on your system.
 
 1.  **Create a `.spec.in` Template**
 
-    Create a template file (e.g., `.revolve/my-app.spec.in`). Note that the `%build` section is empty, as our binary is pre-compiled. This simple template works for both files and directories, thanks to `cargo-revolve`'s asset expansion.
+    Create a template file (e.g., `.revolve/my-app.spec.in`). This template is now fully automatic, leveraging the tool's directory discovery.
 
     ```spec
-    # Disable automatic debug package generation, which is not needed for pre-compiled binaries.
+    # Disable automatic debug package generation.
     %define debug_package %{nil}
 
     Name:           {{ pkg.name }}
@@ -72,7 +74,6 @@ Ensure that `rpmbuild` is installed on your system.
     {{ pkg.description }}
 
     %prep
-    # Use the variable provided by cargo-revolve for robustness.
     %setup -q -n {{ builder.archive_root_dir }}
 
     %build
@@ -80,20 +81,24 @@ Ensure that `rpmbuild` is installed on your system.
 
     %install
     rm -rf %{buildroot}
-    # Loop over the assets from Cargo.toml and install them from the archive root.
-    # cargo-revolve expands directories into a flat list of files for this loop.
+    # This simple loop works for all assets because the tool expands directories.
     {% for asset in builder.assets %}
     install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source | split(pat="/") | last }}" "%{buildroot}{{ asset.dest }}"
     {% endfor %}
 
     %files
     %defattr(-, root, root, -)
-    # List all the files the package owns.
+    # This loop automatically adds all necessary %dir directives.
+    {% if builder.created_dirs %}{% for dir in builder.created_dirs %}
+    %dir {{ dir }}
+    {% endfor %}{% endif %}
+
+    # This loop lists all the individual files.
     {% for asset in builder.assets %}
     {{ asset.dest }}
     {% endfor %}
 
-    # Conditionally include the changelog if it's provided.
+    # Conditionally include the changelog.
     {% if builder.changelog %}
     %changelog
     {{ builder.changelog | trim }}
@@ -102,42 +107,38 @@ Ensure that `rpmbuild` is installed on your system.
 
 2.  **Configure `Cargo.toml`**
 
-    Add a `[package.metadata.revolve]` section to your `Cargo.toml`. The `source` paths must point to the locations of your assets *after* a successful `cargo build`.
+    Add a `[package.metadata.revolve]` section to your `Cargo.toml`.
 
     ```toml
     [package.metadata.revolve]
-    # Path to the spec file template.
     spec_template = ".revolve/my-app.spec.in"
-    
-    # (Optional) Copy final RPMs to this directory.
     output_dir = "dist"
-    
-    # (Optional) Read this file's content into the template's `builder.changelog` variable.
     changelog = "CHANGELOG.md"
 
     # List all asset files and directories to be included in the RPM.
     assets = [
-      # The compiled binary (a file).
+      # The compiled binary (a file). Its parent directory (/usr/bin) will be created.
       { source = "target/release/my-app", dest = "/usr/bin/my-app", mode = "0755" },
       
-      # A systemd service file (a file).
-      { source = "systemd/my-app.service", dest = "/usr/lib/systemd/system/my-app.service" },
+      # A systemd service file. We MUST NOT own its parent directory.
+      { source = "systemd/my-app.service", dest = "/usr/lib/systemd/system/my-app.service", mkdir = false },
       
       # Include an entire configuration directory.
       # The trailing slash tells cargo-revolve to expand this into individual file assets.
+      # The parent directories (/etc/my-app and /etc/my-app/conf.d) will be automatically owned.
       { source = "config/", dest = "/etc/my-app/conf.d/" },
     ]
     ```
 
 3.  **Build!**
 
-    Run the build command from the root of your project. `cargo-revolve` will run `cargo build` for you.
+    Run the build command from the root of your project.
 
     ```bash
     cargo revolve build --verify
     ```
 
-    Your newly built RPM(s) will be in the `dist/` directory, as configured in `Cargo.toml`.
+    Your newly built RPM(s) will be in the `dist/` directory.
 
 ## Advanced Usage: Custom Build Commands
 
@@ -160,7 +161,7 @@ This feature replaces the default build step with commands of your choosing. It 
     build_command = "cargo leptos build --release"
 
     # Define the assets created by the custom command.
-    # The directory expansion feature works here too!
+    # The directory expansion and mkdir flags work here too!
     assets = [
       { source = "target/server/release/leptos-app", dest = "/usr/bin/leptos-app", mode = "0755" },
       { source = "target/site/", dest = "/var/www/leptos-app/" },
@@ -169,7 +170,7 @@ This feature replaces the default build step with commands of your choosing. It 
 
 2.  **Create a `--no-archive` Compatible `.spec.in`**
 
-    When using a custom build command, you must use a spec file designed for the `--no-archive` workflow. This spec does not use `Source0` or `%setup`. Instead, it copies files from an absolute path provided by `rpmbuild`'s `%{_sourcedir}` macro.
+    When using a custom build command, you must use a spec file designed for the `--no-archive` workflow. The automatic directory ownership feature works here as well.
 
     ```spec
     # This spec is for --no-archive builds with pre-built artifacts.
@@ -179,27 +180,30 @@ This feature replaces the default build step with commands of your choosing. It 
     Summary:        A Leptos web application
     License:        MIT
 
-    # This directive tells rpmbuild this is a binary-only package,
-    # disabling source unpacking and preventing default build behaviors.
+    # This directive tells rpmbuild this is a binary-only package.
     %define _binary_payload w7.gzdio
 
     %description
     A web application built with Leptos.
 
-    # These sections are intentionally empty.
     %prep
     %build
 
     %install
     rm -rf %{buildroot}
-    # Even in --no-archive mode, the simple loop works because cargo-revolve expands directory assets.
+    # The simple loop works because cargo-revolve expands directory assets.
     {% for asset in builder.assets %}
     # Use the absolute path provided by _sourcedir to locate the artifact.
-    install -D -m {{ asset.mode | default(value="0644") }} "%{_sourcededir}/{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
+    install -D -m {{ asset.mode | default(value="0644") }} "%{_sourcedir}/{{ asset.source }}" "%{buildroot}{{ asset.dest }}"
     {% endfor %}
 
     %files
     %defattr(-, root, root, -)
+    # The automatic %dir loop works perfectly here too.
+    {% if builder.created_dirs %}{% for dir in builder.created_dirs %}
+    %dir {{ dir }}
+    {% endfor %}{% endif %}
+
     {% for asset in builder.assets %}
     {{ asset.dest }}
     {% endfor %}

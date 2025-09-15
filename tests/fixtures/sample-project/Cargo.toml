@@ -12,4 +12,6 @@ changelog = "CHANGELOG.md"
 assets = [
   { source = "target/release/sample-project", dest = "/usr/bin/sample-project", mode = "0755" },
   { source = "config/", dest = "/etc/sample-project/conf.d/" },
+  # This asset goes into a system directory. We MUST NOT own its parent.
+  { source = "sample.service", dest = "/usr/lib/systemd/system/sample.service", mkdir = false },
 ]

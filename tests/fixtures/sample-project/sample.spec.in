@@ -25,6 +25,15 @@ install -D -m {{ asset.mode | default(value="0644") }} "{{ asset.source | split(
 
 %files
 %defattr(-, root, root, -)
+
+# This loop will now be populated by the tool itself.
+# It will generate a %dir directive for every directory needed by your assets.
+{% if builder.created_dirs %}
+{% for dir in builder.created_dirs %}
+%dir {{ dir }}
+{% endfor %}
+{% endif %}
+
 {% for asset in builder.assets %}
 {{ asset.dest }}
 {% endfor %}

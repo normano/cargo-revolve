@@ -27,6 +27,8 @@ pub struct BuilderContext<'a> {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub build_flags: Option<&'a Vec<String>>,
   
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub created_dirs: Option<Vec<String>>,
 }
 
 /// The top-level context object passed to the Tera templating engine.
