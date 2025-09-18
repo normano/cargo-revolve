@@ -30,11 +30,13 @@ pub fn run(
   // 1. Environment Check
   check_environment()?;
 
+  execute_build_process(config, package, target_dir, dry_run)?;
+
   let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
 
   // Create a mutable copy of the config so we can replace the assets list.
   let mut mutable_config = config; // This is a reference, not a deep clone.
-  let mut expanded_assets_config: Option<RevolveConfig> = None;
+  let mut _expanded_assets_config: Option<RevolveConfig> = None;
   let mut created_dirs: Option<Vec<String>> = None;
 
   if let Some(initial_assets) = &config.assets {
@@ -50,7 +52,7 @@ pub fn run(
 
     // Create a new owned RevolveConfig with the expanded assets.
     // This is necessary because `config` is a borrowed reference.
-    expanded_assets_config = Some(RevolveConfig {
+    _expanded_assets_config = Some(RevolveConfig {
       spec_template: config.spec_template.clone(),
       output_dir: config.output_dir.clone(),
       changelog: config.changelog.clone(),
@@ -61,7 +63,7 @@ pub fn run(
       build_command: config.build_command.clone(), // You will need to derive Clone for BuildCommand
     });
     // Point our mutable_config to the new, owned config struct.
-    mutable_config = expanded_assets_config.as_ref().unwrap();
+    mutable_config = _expanded_assets_config.as_ref().unwrap();
   }
   // All subsequent code will now use `mutable_config` which has the expanded asset list.
 
@@ -81,8 +83,6 @@ pub fn run(
       )
     })?;
   }
-
-  execute_build_process(mutable_config, package, target_dir, dry_run)?;
 
   // 3. Prepare build directories
 
@@ -376,10 +376,10 @@ fn execute_build_process(
 
     // Set environment variables for the custom command context.
     let mut env_vars = HashMap::new();
-    env_vars.insert("REVOLVE_TARGET_DIR", target_dir.as_os_str());
-    env_vars.insert("REVOLVE_PACKAGE_NAME", package.name.as_ref());
+    env_vars.insert("REVOLVE_TARGET_DIR", target_dir.to_str().unwrap().to_string());
+    env_vars.insert("REVOLVE_PACKAGE_NAME", package.name.to_string());
     // Now we use a reference to the `package_version_str` which has a valid lifetime.
-    env_vars.insert("REVOLVE_PACKAGE_VERSION", package_version_str.as_ref());
+    env_vars.insert("REVOLVE_PACKAGE_VERSION", package_version_str);
 
     // --- START: FIX 2 ---
     // We need to work with references to the strings to avoid cloning and ownership issues.
@@ -575,7 +575,7 @@ fn verify_package(
 
   // 1. Verify package metadata
   log::debug!("Verifying package metadata (Name, Version, etc.)...");
-  if metadata.get_name()? != cargo_package.name {
+  if metadata.get_name()? != cargo_package.name.as_str() {
     log::error!(
       "Verification failed: Name mismatch. Expected '{}', found '{}'",
       cargo_package.name,
